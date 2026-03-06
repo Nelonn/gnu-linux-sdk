@@ -1,0 +1,104 @@
+# debian-trixie.toml
+
+[strategy]
+method = "apt"
+suite = "trixie"
+mirrors = ["http://deb.debian.org/debian", "http://ftp.debian.org/debian"]
+
+[groups.glibc]
+packages = [
+    "libc6",
+    "libc6-dev",
+    "linux-libc-dev",
+]
+
+[groups.gcc]
+packages = [
+    "libgcc-12-dev",
+    "libgcc-s1",
+]
+requires = ["glibc"]
+
+[groups.libstdcxx]
+packages = ["libstdc++-12-dev"]
+requires = ["gcc"]
+
+[groups.clang]
+packages = ["libclang-rt-dev"]
+requires = ["glibc"]
+
+[groups.libcxx]
+packages = [
+    "libc++-dev",
+    "libc++abi-dev",
+]
+requires = ["glibc"]
+
+[groups.x11]
+packages = [
+    "libx11-dev",
+    "libxext-dev",
+    "libxrandr-dev",
+    "libxcursor-dev",
+    "libxfixes-dev",
+    "libxi-dev",
+    "libxss-dev",
+    "libxtst-dev",
+    "libxkbcommon-dev",
+]
+requires = ["glibc"]
+
+[groups.wayland]
+packages = ["libwayland-dev"]
+requires = ["glibc"]
+
+[groups.graphics]
+packages = [
+    "libdrm-dev",
+    "libgbm-dev",
+    "libgl1-mesa-dev",
+    "libgles2-mesa-dev",
+    "libdecor-0-dev",
+]
+requires = ["x11", "wayland"]
+
+[groups.audio]
+packages = [
+    "libsndio-dev",
+    "libaudio-dev",
+    "libasound2-dev",
+    "libpulse-dev",
+    "libpipewire-0.3-dev",
+    "libjack-dev",
+]
+requires = ["glibc"]
+
+[groups.hid]
+packages = [
+    "libusb-1.0-0-dev",
+    "libudev-dev",
+]
+requires = ["glibc"]
+
+[groups.text]
+packages = [
+    "libibus-1.0-dev",
+    "libthai-dev",
+    "libfribidi-dev",
+]
+requires = ["glibc"]
+
+[groups.ffmpeg]
+packages = [
+    "libavcodec-dev",
+    "libavformat-dev",
+    "libavutil-dev",
+]
+requires = ["glibc"]
+
+[groups.other]
+packages = ["libdbus-1-dev"]
+requires = ["glibc"]
+
+[profiles.full]
+groups = ["glibc", "gcc", "libstdcxx", "libcxx", "clang", "x11", "wayland", "graphics", "audio", "hid", "text", "ffmpeg", "other"]

@@ -1,6 +1,7 @@
 /.gitdeps
 /build
 /cmake-build-**
+/target
 
 # C++ IDE files and directories
 .vscode/
