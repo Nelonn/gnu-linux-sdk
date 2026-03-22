@@ -20,7 +20,10 @@ packages = [
 requires = ["glibc"]
 
 [groups.libstdcxx]
-packages = ["libstdc++-12-dev"]
+packages = [
+    "libstdc++6",
+    "libstdc++-12-dev",
+]
 requires = ["gcc"]
 
 [groups.clang]

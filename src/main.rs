@@ -21,6 +21,31 @@ use cache::FileCache;
 use debian::DebianFetcher;
 use toolchain::get_toolchain_content;
 
+/// Normalise a symlink target coming out of a Unix tar archive so that
+/// Windows `CreateSymbolicLink` can resolve it:
+///
+///   ./usr/lib/x86_64-linux-gnu  →  usr\lib\x86_64-linux-gnu
+///   /usr/lib                    →  usr\lib
+///   ../lib/libc.so.6            →  ..\lib\libc.so.6
+#[cfg(windows)]
+fn normalize_symlink_target(link_target: &Path) -> PathBuf {
+    let target_str = link_target.to_string_lossy();
+
+    // Strip a leading "./" — Windows sees it as a syntax error
+    let s = target_str.strip_prefix("./").unwrap_or(&target_str);
+
+    // Strip a leading "/" — absolute Unix paths become relative ones
+    let s = s.strip_prefix('/').unwrap_or(s);
+
+    // Replace every forward slash with a backslash
+    PathBuf::from(s.replace('/', "\\"))
+}
+
+#[cfg(unix)]
+fn normalize_symlink_target(link_target: &Path) -> PathBuf {
+    link_target.to_path_buf()
+}
+
 #[cfg(windows)]
 fn has_symlink_privileges() -> bool {
     use std::os::windows::fs::symlink_file;
@@ -42,31 +67,19 @@ fn has_symlink_privileges() -> bool {
 
 #[cfg(windows)]
 fn create_symlink(link_target: &Path, link_path: &Path, has_privileges: bool) -> Result<()> {
-    use std::os::windows::fs::{symlink_dir, symlink_file};
+    use std::os::windows::fs::symlink_file;
 
     if !has_privileges {
         return Ok(());
     }
 
-    let full_target = if link_target.is_absolute() {
-        link_target.to_path_buf()
-    } else {
-        link_path.parent()
-            .map(|p| p.join(link_target))
-            .unwrap_or_else(|| link_target.to_path_buf())
-    };
+    let normalized = normalize_symlink_target(link_target);
 
-    let result = if full_target.is_dir() {
-        symlink_dir(link_target, link_path)
-    } else {
-        symlink_file(link_target, link_path)
-    };
-
-    if let Err(e) = result {
+    if let Err(e) = symlink_file(&normalized, link_path) {
         eprintln!(
             "Warning: Failed to create symlink {} -> {}: {}",
             link_path.display(),
-            link_target.display(),
+            normalized.display(),
             e
         );
     }
@@ -82,11 +95,13 @@ fn create_dir_symlink(link_target: &Path, link_path: &Path, has_privileges: bool
         return Ok(());
     }
 
-    if let Err(e) = symlink_dir(link_target, link_path) {
+    let normalized = normalize_symlink_target(link_target);
+
+    if let Err(e) = symlink_dir(&normalized, link_path) {
         eprintln!(
             "Warning: Failed to create directory symlink {} -> {}: {}",
             link_path.display(),
-            link_target.display(),
+            normalized.display(),
             e
         );
     }
@@ -331,14 +346,14 @@ impl<W: Write> TarConsumer<W> {
                 if let Some(link_name) = entry.link_name()? {
                     let link_target = link_name.to_path_buf();
                     let size = link_target.to_string_lossy().len() as u64;
-                    
+
                     let mut header = tar::Header::new_gnu();
                     header.set_size(size);
                     header.set_mode(0o777);
                     header.set_mtime(0);
                     header.set_entry_type(tar::EntryType::Symlink);
                     header.set_cksum();
-                    
+
                     self.builder.append_link(&mut header, &target_path, &link_target)?;
                 }
             }
@@ -453,10 +468,12 @@ impl DirConsumer {
                         fs::create_dir_all(parent)?;
                     }
                     let _ = fs::remove_file(&dest_path);
+                    // normalize_symlink_target fixes Unix-style paths on Windows
+                    let normalized = normalize_symlink_target(&link_name);
                     #[cfg(windows)]
-                    create_symlink(&link_name, &dest_path, self.has_symlink_privileges)?;
+                    create_symlink(&normalized, &dest_path, self.has_symlink_privileges)?;
                     #[cfg(unix)]
-                    create_symlink(&link_name, &dest_path, false)?;
+                    create_symlink(&normalized, &dest_path, false)?;
                 }
             }
         }
@@ -473,21 +490,21 @@ impl DirConsumer {
             if !usr_lib64_dir.exists() {
                 let _ = fs::create_dir_all(&usr_lib64_dir);
             }
-            
+
             if !lib_dir.exists() && !lib_dir.is_symlink() {
                 #[cfg(windows)]
-                let _ = create_dir_symlink(Path::new("usr/lib"), &lib_dir, self.has_symlink_privileges);
+                let _ = create_dir_symlink(Path::new("usr\\lib"), &lib_dir, self.has_symlink_privileges);
                 #[cfg(unix)]
                 let _ = create_dir_symlink(Path::new("usr/lib"), &lib_dir, false);
             }
-            
+
             if !lib64_dir.exists() && !lib64_dir.is_symlink() {
                 #[cfg(windows)]
-                let _ = create_dir_symlink(Path::new("usr/lib64"), &lib64_dir, self.has_symlink_privileges);
+                let _ = create_dir_symlink(Path::new("usr\\lib64"), &lib64_dir, self.has_symlink_privileges);
                 #[cfg(unix)]
                 let _ = create_dir_symlink(Path::new("usr/lib64"), &lib64_dir, false);
             }
-            
+
             self.lib_symlink_created = true;
         }
 
