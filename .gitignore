@@ -2,6 +2,8 @@
 /build
 /cmake-build-**
 /target
+/test
+.package-cache
 
 # C++ IDE files and directories
 .vscode/

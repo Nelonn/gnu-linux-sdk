@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use futures::stream::{self, StreamExt};
 use tar::Builder;
 use thiserror::Error;
 use xz2::read::XzDecoder;
@@ -557,20 +558,47 @@ impl SysrootBuilder {
 
     pub async fn build<C: PackageConsumer>(&self, profile_name: &str, consumer: &mut C) -> Result<()> {
         println!("Resolving packages for profile '{}'...", profile_name);
-        let packages = self.config.resolve_packages(profile_name)?;
-        println!("Found {} packages to process", packages.len());
+        let package_names = self.config.resolve_packages(profile_name)?;
+        println!("Found {} packages to process", package_names.len());
 
-        for pkg_name in &packages {
-            println!("Processing {}...", pkg_name);
+        let mut all_pkg_infos = Vec::new();
+        for pkg_name in &package_names {
+            all_pkg_infos.push(self.fetcher.fetch_package(pkg_name)?);
+        }
 
-            let pkg_info = self.fetcher.fetch_package(pkg_name)?;
+        let to_download: Vec<PackageInfo> = all_pkg_infos
+            .iter()
+            .filter(|info| !self.cache.has_cached(&info.name, &info.version))
+            .cloned()
+            .collect();
+
+        if !to_download.is_empty() {
+            println!("Downloading {} missing packages concurrently...", to_download.len());
+            let concurrency = 8;
+            let downloads = stream::iter(to_download)
+                .map(|pkg_info| async move {
+                    println!("  Downloading {} {}...", pkg_info.name, pkg_info.version);
+                    let data = self.fetcher.download_package(&pkg_info).await?;
+                    self.cache.save(&pkg_info.name, &pkg_info.version, &data)?;
+                    Ok::<(), SysrootError>(())
+                })
+                .buffer_unordered(concurrency);
+
+            let mut results = downloads.collect::<Vec<_>>().await;
+            for res in results.drain(..) {
+                res?;
+            }
+        }
+
+        for pkg_info in all_pkg_infos {
+            println!("Processing {}...", pkg_info.name);
 
             consumer.on_start(&pkg_info)?;
 
             let deb_data = if self.cache.has_cached(&pkg_info.name, &pkg_info.version) {
-                println!("  Using cached {} {}", pkg_info.name, pkg_info.version);
                 self.cache.load(&pkg_info.name, &pkg_info.version)?
             } else {
+                // This shouldn't happen now, but just in case
                 println!("  Downloading {} {}...", pkg_info.name, pkg_info.version);
                 let data = self.fetcher.download_package(&pkg_info).await?;
                 self.cache.save(&pkg_info.name, &pkg_info.version, &data)?;
