@@ -1,4 +1,5 @@
 # debian-trixie.toml
+# https://packages.debian.org/search?suite=trixie&section=all&arch=any&searchon=names
 
 [strategy]
 method = "apt"
@@ -100,6 +101,20 @@ packages = [
 ]
 requires = ["glibc"]
 
+[groups.gio]
+packages = [
+    "libgio-2.0-dev",
+    "libsysprof-capture-4-dev",
+    "libpcre2-dev",
+    "libffi-dev",
+    "zlib1g-dev",
+    "libmount-dev",
+    "libblkid-dev",
+    "libselinux1-dev",
+    "libsepol-dev",
+]
+requires = ["glibc"]
+
 [groups.other]
 packages = [
     "libdbus-1-dev",
@@ -108,4 +123,4 @@ packages = [
 requires = ["glibc"]
 
 [profiles.full]
-groups = ["glibc", "gcc", "libstdcxx", "libcxx", "clang", "x11", "wayland", "graphics", "audio", "hid", "text", "ffmpeg", "other"]
+groups = ["glibc", "gcc", "libstdcxx", "libcxx", "clang", "x11", "wayland", "graphics", "audio", "hid", "text", "ffmpeg", "gio", "other"]
