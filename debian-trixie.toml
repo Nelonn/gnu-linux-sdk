@@ -1,5 +1,5 @@
 # debian-trixie.toml
-# https://packages.debian.org/search?suite=trixie&section=all&arch=any&searchon=names
+# https://packages.debian.org/search?suite=trixie&section=all&arch=any&searchon=names&keywords=search
 
 [strategy]
 method = "apt"
