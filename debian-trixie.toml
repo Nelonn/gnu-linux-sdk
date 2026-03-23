@@ -15,7 +15,7 @@ packages = [
 
 [groups.gcc]
 packages = [
-    "libgcc-12-dev",
+    "libgcc-13-dev",
     "libgcc-s1",
 ]
 requires = ["glibc"]
@@ -23,7 +23,7 @@ requires = ["glibc"]
 [groups.libstdcxx]
 packages = [
     "libstdc++6",
-    "libstdc++-12-dev",
+    "libstdc++-13-dev",
 ]
 requires = ["gcc"]
 
