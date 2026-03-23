@@ -73,6 +73,7 @@ packages = [
     "libpulse-dev",
     "libpipewire-0.3-dev",
     "libjack-dev",
+    "libspa-0.2-dev",
 ]
 requires = ["glibc"]
 
@@ -100,7 +101,10 @@ packages = [
 requires = ["glibc"]
 
 [groups.other]
-packages = ["libdbus-1-dev"]
+packages = [
+    "libdbus-1-dev",
+    "libsystemd-dev",
+]
 requires = ["glibc"]
 
 [profiles.full]
