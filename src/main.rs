@@ -640,6 +640,23 @@ impl SysrootBuilder {
         println!("Toolchain file written to: {}", toolchain_path.display());
         Ok(())
     }
+
+    pub fn write_package_list(&self, output_dir: &Path, profile_name: &str) -> Result<()> {
+        let package_names = self.config.resolve_packages(profile_name)?;
+        
+        let mut package_list = Vec::new();
+        for pkg_name in &package_names {
+            if let Ok(pkg_info) = self.fetcher.fetch_package(pkg_name) {
+                package_list.push(format!("{}={}", pkg_info.name, pkg_info.version));
+            }
+        }
+
+        let package_list_content = package_list.join("\n");
+        let package_list_path = output_dir.join("packages.txt");
+        fs::write(&package_list_path, package_list_content)?;
+        println!("Package list written to: {}", package_list_path.display());
+        Ok(())
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -766,6 +783,7 @@ async fn main() -> Result<()> {
                 if toolchain {
                     builder.write_toolchain_file(&output)?;
                 }
+                builder.write_package_list(&output, &profile)?;
 
                 println!("Sysroot extracted to: {}", output.display());
             }
@@ -792,6 +810,7 @@ async fn main() -> Result<()> {
             if toolchain {
                 builder.write_toolchain_file(&output)?;
             }
+            builder.write_package_list(&output, &profile)?;
 
             println!("Sysroot extracted to: {}", output.display());
         }
@@ -817,6 +836,7 @@ async fn main() -> Result<()> {
             if toolchain {
                 builder.write_toolchain_file(&output)?;
             }
+            builder.write_package_list(&output, &profile)?;
 
             println!("Packages fetched to: {}", output.display());
         }
