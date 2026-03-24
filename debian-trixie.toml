@@ -40,39 +40,68 @@ requires = ["glibc"]
 
 [groups.x11]
 packages = [
+    "x11proto-dev",
+    "libx11-6",
     "libx11-dev",
+    "libxext6",
     "libxext-dev",
+    "libxrandr2",
     "libxrandr-dev",
+    "libxcursor1",
     "libxcursor-dev",
+    "libxfixes3",
     "libxfixes-dev",
+    "libxi6",
     "libxi-dev",
+    "libxss1",
     "libxss-dev",
+    "libxtst6",
     "libxtst-dev",
+    "libxkbcommon0",
     "libxkbcommon-dev",
 ]
 requires = ["glibc"]
 
 [groups.wayland]
-packages = ["libwayland-dev"]
+packages = [
+    "libwayland-client0",
+    "libwayland-server0",
+    "libwayland-cursor0",
+    "libwayland-egl1",
+    "libwayland-dev",
+    "wayland-protocols",
+]
 requires = ["glibc"]
 
 [groups.graphics]
 packages = [
     "libdrm-dev",
     "libgbm-dev",
-    "libgl1-mesa-dev",
-    "libgles2-mesa-dev",
+    "libglx-dev",
+    "libglvnd-dev",
+    "libegl-dev",
+    "libopengl-dev",
+    "libgl-dev",
+    "libgles-dev",
+    "libgl1",
+    "libdecor-0-0",
     "libdecor-0-dev",
 ]
 requires = ["x11", "wayland"]
 
 [groups.audio]
 packages = [
+    "libsndio7.0",
     "libsndio-dev",
+    "libaudio2",
     "libaudio-dev",
+    "libasound2t64",
     "libasound2-dev",
+    "libpulse0",
     "libpulse-dev",
+    "libpipewire-0.3-0t64",
     "libpipewire-0.3-dev",
+    "libjack0",
     "libjack-dev",
     "libspa-0.2-dev",
 ]
@@ -80,15 +109,21 @@ requires = ["glibc"]
 
 [groups.hid]
 packages = [
+    "libusb-1.0-0",
     "libusb-1.0-0-dev",
+    "libudev1",
     "libudev-dev",
 ]
 requires = ["glibc"]
 
 [groups.text]
 packages = [
+    "libibus-1.0-5",
     "libibus-1.0-dev",
+    "libdatrie-dev",
+    "libthai0",
     "libthai-dev",
+    "libfribidi0",
     "libfribidi-dev",
 ]
 requires = ["glibc"]
@@ -103,6 +138,7 @@ requires = ["glibc"]
 
 [groups.gio]
 packages = [
+    "libglib2.0-0t64",
     "libgio-2.0-dev",
     "libsysprof-capture-4-dev",
     "libpcre2-dev",
@@ -117,7 +153,9 @@ requires = ["glibc"]
 
 [groups.other]
 packages = [
+    "libdbus-1-3",
     "libdbus-1-dev",
+    "libsystemd0",
     "libsystemd-dev",
 ]
 requires = ["glibc"]
