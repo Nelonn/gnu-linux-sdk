@@ -6,12 +6,14 @@ use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use futures::stream::{self, StreamExt};
 use tar::Builder;
 use xz2::read::XzDecoder;
+use zip::write::ZipWriter;
+use zip::write::SimpleFileOptions;
 
 mod cache;
 mod debian;
@@ -280,6 +282,55 @@ impl<W: Write> FileConsumer for TarConsumer<W> {
 impl<W: Write> TarConsumer<W> {
     pub fn finish(mut self) -> Result<()> {
         self.builder.finish()?;
+        Ok(())
+    }
+}
+
+pub struct ZipConsumer<W: Write + Seek> {
+    writer: ZipWriter<W>,
+}
+
+impl<W: Write + Seek> ZipConsumer<W> {
+    pub fn new(writer: W) -> Self {
+        Self {
+            writer: ZipWriter::new(writer),
+        }
+    }
+}
+
+impl<W: Write + Seek> FileConsumer for ZipConsumer<W> {
+    fn add_file(&mut self, path: &Path, contents: &[u8], _mode: u32) -> Result<()> {
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        self.writer.start_file(&path_str, SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).unix_permissions(0o644))?;
+        self.writer.write_all(contents)?;
+        Ok(())
+    }
+
+    fn add_dir(&mut self, path: &Path) -> Result<()> {
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        let dir_path = if path_str.ends_with('/') {
+            path_str.to_string()
+        } else {
+            format!("{}/", path_str)
+        };
+        self.writer.add_directory(&dir_path, SimpleFileOptions::default().unix_permissions(0o755))?;
+        Ok(())
+    }
+
+    fn add_symlink(&mut self, path: &Path, target: &Path) -> Result<()> {
+        // ZIP doesn't natively support symlinks, so we store them as regular files
+        // with the target path as content (Unix-style)
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        let target_str = target.to_string_lossy();
+        self.writer.start_file(&path_str, SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).unix_permissions(0o777))?;
+        self.writer.write_all(target_str.as_bytes())?;
+        Ok(())
+    }
+}
+
+impl<W: Write + Seek> ZipConsumer<W> {
+    pub fn finish(self) -> Result<()> {
+        self.writer.finish()?;
         Ok(())
     }
 }
@@ -669,6 +720,11 @@ async fn main() -> Result<()> {
             if output_str.ends_with(".tar.gz") || output_str.ends_with(".tgz") {
                 let file = File::create(&output)?;
                 let mut consumer = TarConsumer::new(file)?;
+                builder.build(&profile, &mut consumer).await?;
+                consumer.finish()?;
+            } else if output_str.ends_with(".zip") {
+                let file = File::create(&output)?;
+                let mut consumer = ZipConsumer::new(file);
                 builder.build(&profile, &mut consumer).await?;
                 consumer.finish()?;
             } else {
