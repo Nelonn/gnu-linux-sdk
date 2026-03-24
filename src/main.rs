@@ -6,11 +6,11 @@ use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use anyhow::{Context, bail};
 use futures::stream::{self, StreamExt};
 use tar::Builder;
-use thiserror::Error;
 use xz2::read::XzDecoder;
 
 mod cache;
@@ -121,25 +121,7 @@ fn create_dir_symlink(link_target: &Path, link_path: &Path, _has_privileges: boo
     Ok(())
 }
 
-#[derive(Error, Debug)]
-pub enum SysrootError {
-    #[error("Failed to parse config: {0}")]
-    ConfigParse(#[from] toml::de::Error),
-
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-
-    #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
-
-    #[error("Package not found: {0}")]
-    PackageNotFound(String),
-
-    #[error("Invalid configuration: {0}")]
-    InvalidConfig(String),
-}
-
-pub type Result<T> = std::result::Result<T, SysrootError>;
+pub type Result<T> = anyhow::Result<T>;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Strategy {
@@ -180,7 +162,7 @@ impl Config {
         let profile = self
             .profiles
             .get(profile_name)
-            .ok_or_else(|| SysrootError::InvalidConfig(format!("Profile '{}' not found", profile_name)))?;
+            .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", profile_name))?;
 
         let mut resolved = Vec::new();
         let mut visited = HashSet::new();
@@ -205,10 +187,7 @@ impl Config {
         }
 
         if in_stack.contains(group_name) {
-            return Err(SysrootError::InvalidConfig(format!(
-                "Circular dependency detected involving group '{}'",
-                group_name
-            )));
+            bail!("Circular dependency detected involving group '{}'", group_name);
         }
 
         in_stack.insert(group_name.to_string());
@@ -216,7 +195,7 @@ impl Config {
         let group = self
             .groups
             .get(group_name)
-            .ok_or_else(|| SysrootError::InvalidConfig(format!("Group '{}' not found", group_name)))?;
+            .ok_or_else(|| anyhow::anyhow!("Group '{}' not found", group_name))?;
 
         for dep in &group.requires {
             self.resolve_group(dep, resolved, visited, in_stack)?;
@@ -244,138 +223,56 @@ pub struct PackageInfo {
     pub download_url: String,
 }
 
-pub trait PackageConsumer {
-    fn on_start(&mut self, pkg: &PackageInfo) -> Result<()> {
-        let _ = pkg;
-        Ok(())
-    }
-
-    fn consume(&mut self, pkg: &PackageInfo, deb_data: &[u8]) -> Result<()>;
-
-    fn on_complete(&mut self, pkg: &PackageInfo) -> Result<()> {
-        let _ = pkg;
-        Ok(())
-    }
+pub trait FileConsumer {
+    fn add_file(&mut self, path: &Path, contents: &[u8], mode: u32) -> Result<()>;
+    fn add_dir(&mut self, path: &Path) -> Result<()>;
+    fn add_symlink(&mut self, path: &Path, target: &Path) -> Result<()>;
 }
 
 pub struct TarConsumer<W: Write> {
     builder: Builder<GzEncoder<W>>,
-    sysroot_prefix: String,
 }
 
 impl<W: Write> TarConsumer<W> {
-    pub fn new(writer: W, sysroot_prefix: &str) -> Result<Self> {
+    pub fn new(writer: W) -> Result<Self> {
         let encoder = GzEncoder::new(writer, Compression::default());
         let builder = Builder::new(encoder);
         Ok(Self {
             builder,
-            sysroot_prefix: sysroot_prefix.to_string(),
         })
-    }
-
-    fn extract_data_tar(&self, deb_data: &[u8]) -> Result<Vec<u8>> {
-        let mut ar = ArArchive::new(deb_data);
-
-        while let Some(entry_result) = ar.next_entry() {
-            let mut entry = entry_result?;
-            let name = entry.header().identifier();
-            let name_str = String::from_utf8_lossy(name).to_string();
-
-            if name_str.starts_with("data.tar") {
-                let mut data = Vec::new();
-                entry.read_to_end(&mut data)?;
-
-                if name_str.ends_with(".gz") {
-                    let mut decoder = GzDecoder::new(&data[..]);
-                    let mut extracted = Vec::new();
-                    decoder.read_to_end(&mut extracted)?;
-                    return Ok(extracted);
-                } else if name_str.ends_with(".xz") {
-                    let mut decoder = XzDecoder::new(&data[..]);
-                    let mut extracted = Vec::new();
-                    decoder.read_to_end(&mut extracted)?;
-                    return Ok(extracted);
-                } else {
-                    return Ok(data);
-                }
-            }
-        }
-
-        Err(SysrootError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "No data.tar found in .deb package",
-        )))
-    }
-
-    fn add_to_tar(&mut self, data_tar: &[u8]) -> Result<()> {
-        let mut inner_tar = tar::Archive::new(data_tar);
-
-        for entry_result in inner_tar.entries()? {
-            let mut entry = entry_result?;
-            let path = entry.path()?.to_path_buf();
-
-            let target_path = match path.strip_prefix("/") {
-                Ok(rel) => format!("{}/{}", self.sysroot_prefix, rel.display()),
-                Err(_) => format!("{}/{}", self.sysroot_prefix, path.display()),
-            };
-
-            let entry_type = entry.header().entry_type();
-
-            if entry_type.is_dir() {
-                let mut header = tar::Header::new_gnu();
-                header.set_size(0);
-                header.set_mode(0o755);
-                header.set_mtime(0);
-                header.set_entry_type(tar::EntryType::Directory);
-                header.set_cksum();
-                self.builder.append_data(&mut header, &target_path, &[][..])?;
-            } else if entry_type.is_file() {
-                let size = entry.header().size()?;
-                let mut contents = Vec::with_capacity(size as usize);
-                entry.read_to_end(&mut contents)?;
-
-                let mut header = tar::Header::new_gnu();
-                header.set_size(contents.len() as u64);
-                header.set_mode(0o644);
-                header.set_mtime(0);
-                header.set_cksum();
-
-                self.builder
-                    .append_data(&mut header, &target_path, &contents[..])?;
-            } else if entry_type.is_symlink() {
-                if let Some(link_name) = entry.link_name()? {
-                    let link_target = link_name.to_path_buf();
-                    let size = link_target.to_string_lossy().len() as u64;
-
-                    let mut header = tar::Header::new_gnu();
-                    header.set_size(size);
-                    header.set_mode(0o777);
-                    header.set_mtime(0);
-                    header.set_entry_type(tar::EntryType::Symlink);
-                    header.set_cksum();
-
-                    self.builder.append_link(&mut header, &target_path, &link_target)?;
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 
-impl<W: Write + Seek> PackageConsumer for TarConsumer<W> {
-    fn consume(&mut self, pkg: &PackageInfo, deb_data: &[u8]) -> Result<()> {
-        eprintln!("    TarConsumer: consuming {} ({} bytes)", pkg.name, deb_data.len());
-        eprintln!("    TarConsumer: extracting data.tar...");
-        let data_tar = self.extract_data_tar(deb_data)?;
-        eprintln!("    TarConsumer: extracted {} bytes from data.tar", data_tar.len());
-        eprintln!("    TarConsumer: adding to archive...");
-        self.add_to_tar(&data_tar)?;
-        eprintln!("    TarConsumer: done");
+impl<W: Write> FileConsumer for TarConsumer<W> {
+    fn add_file(&mut self, path: &Path, contents: &[u8], _mode: u32) -> Result<()> {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_cksum();
+        self.builder.append_data(&mut header, path, contents)?;
         Ok(())
     }
 
-    fn on_complete(&mut self, _pkg: &PackageInfo) -> Result<()> {
+    fn add_dir(&mut self, path: &Path) -> Result<()> {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_mtime(0);
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_cksum();
+        self.builder.append_data(&mut header, path, &[][..])?;
+        Ok(())
+    }
+
+    fn add_symlink(&mut self, path: &Path, target: &Path) -> Result<()> {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_mtime(0);
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_cksum();
+        self.builder.append_link(&mut header, path, target)?;
         Ok(())
     }
 }
@@ -387,159 +284,148 @@ impl<W: Write> TarConsumer<W> {
     }
 }
 
-pub struct DirConsumer {
+pub struct DiskConsumer {
     output_dir: PathBuf,
     #[cfg(windows)]
     has_symlink_privileges: bool,
-    lib_symlink_created: bool,
 }
 
-impl DirConsumer {
+impl DiskConsumer {
     pub fn new(output_dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&output_dir)?;
+
         #[cfg(windows)]
         let has_symlink_privileges = has_symlink_privileges();
+
         Ok(Self {
             output_dir,
             #[cfg(windows)]
             has_symlink_privileges,
-            lib_symlink_created: false,
         })
     }
+}
 
-    fn extract_data_tar(&self, deb_data: &[u8]) -> Result<Vec<u8>> {
-        let mut ar = ArArchive::new(deb_data);
+impl FileConsumer for DiskConsumer {
+    fn add_file(&mut self, path: &Path, contents: &[u8], _mode: u32) -> Result<()> {
+        let dest = self.output_dir.join(path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory tree for {}", parent.display()))?;
+        }
+        if !dest.exists() {
+            fs::write(&dest, contents)
+                .with_context(|| format!("Failed to write file to disk: {}", dest.display()))?;
+        }
+        Ok(())
+    }
 
-        while let Some(entry_result) = ar.next_entry() {
-            let mut entry = entry_result?;
-            let name = entry.header().identifier();
-            let name_str = String::from_utf8_lossy(name).to_string();
+    fn add_dir(&mut self, path: &Path) -> Result<()> {
+        let dest = self.output_dir.join(path);
+        if dest.is_file() || dest.is_symlink() {
+            fs::remove_file(&dest).with_context(|| format!("Failed to remove existing file at {}", dest.display()))?;
+        }
+        fs::create_dir_all(&dest).with_context(|| format!("Failed to create directory: {}", dest.display()))?;
+        Ok(())
+    }
 
-            if name_str.starts_with("data.tar") {
-                let mut data = Vec::new();
-                entry.read_to_end(&mut data)?;
+    fn add_symlink(&mut self, path: &Path, target: &Path) -> Result<()> {
+        let dest = self.output_dir.join(path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).context("Failed to create parent dir for symlink")?;
+        }
 
-                if name_str.ends_with(".gz") {
-                    let mut decoder = GzDecoder::new(&data[..]);
-                    let mut extracted = Vec::new();
-                    decoder.read_to_end(&mut extracted)?;
-                    return Ok(extracted);
-                } else if name_str.ends_with(".xz") {
-                    let mut decoder = XzDecoder::new(&data[..]);
-                    let mut extracted = Vec::new();
-                    decoder.read_to_end(&mut extracted)?;
-                    return Ok(extracted);
-                } else {
-                    return Ok(data);
-                }
+        if dest.is_symlink() {
+            if dest.is_dir() {
+                fs::remove_dir_all(&dest).with_context(|| format!("Failed to clear dir for symlink: {}", dest.display()))?;
+            } else {
+                fs::remove_file(&dest).with_context(|| format!("Failed to clear file for symlink: {}", dest.display()))?;
+            }
+        } else if dest.exists() {
+            return Ok(());
+        }
+
+        #[cfg(windows)]
+        {
+            // Note: Since DiskConsumer has logic here, I'm wrapping the inner Windows calls
+            use std::os::windows::fs::{symlink_dir, symlink_file};
+            if !self.has_symlink_privileges { return Ok(()); }
+            let normalized_target = normalize_symlink_target(target);
+            let mut actual_target_path = dest.parent().unwrap_or(&self.output_dir).to_path_buf();
+            actual_target_path.push(target);
+
+            let is_dir = fs::metadata(&actual_target_path).map(|m| m.is_dir()).unwrap_or(false);
+            if is_dir {
+                symlink_dir(&normalized_target, &dest).context("Failed Windows dir symlink")?;
+            } else {
+                symlink_file(&normalized_target, &dest).context("Failed Windows file symlink")?;
             }
         }
 
-        Err(SysrootError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "No data.tar found in .deb package",
-        )))
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, &dest)
+                .with_context(|| format!("Failed to create unix symlink: {} -> {}", dest.display(), target.display()))?;
+        }
+        Ok(())
     }
+}
 
-    fn extract_to_dir(&mut self, data_tar: &[u8]) -> Result<()> {
-        let mut inner_tar = tar::Archive::new(data_tar);
+pub fn process_deb_into_consumer<C: FileConsumer>(deb_data: &[u8], consumer: &mut C, prefix: &str) -> Result<()> {
+    let mut ar = ArArchive::new(deb_data);
 
-        for entry_result in inner_tar.entries()? {
-            let mut entry = entry_result?;
-            let path = entry.path()?.to_path_buf();
+    while let Some(entry_result) = ar.next_entry() {
+        let mut entry = entry_result?;
+        let name = String::from_utf8_lossy(entry.header().identifier()).to_string();
 
-            let dest_path = match path.strip_prefix("/") {
-                Ok(rel) => self.output_dir.join(rel),
-                Err(_) => self.output_dir.join(&path),
+        if name.starts_with("data.tar") {
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data)?;
+
+            let decompressed = if name.ends_with(".gz") {
+                let mut decoder = GzDecoder::new(&data[..]);
+                let mut buf = Vec::new();
+                decoder.read_to_end(&mut buf)?;
+                buf
+            } else if name.ends_with(".xz") {
+                let mut decoder = XzDecoder::new(&data[..]);
+                let mut buf = Vec::new();
+                decoder.read_to_end(&mut buf)?;
+                buf
+            } else {
+                data
             };
 
-            let entry_type = entry.header().entry_type();
-
-            if entry_type.is_dir() {
-                fs::create_dir_all(&dest_path)?;
-            } else if entry_type.is_file() {
-                if let Some(parent) = dest_path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                entry.unpack(&dest_path)?;
-            } else if entry_type.is_symlink() {
-                if let Some(link_name) = entry.link_name()? {
-                    if let Some(parent) = dest_path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    let _ = fs::remove_file(&dest_path);
-                    // normalize_symlink_target fixes Unix-style paths on Windows
-                    let normalized = normalize_symlink_target(&link_name);
-                    #[cfg(windows)]
-                    create_symlink(&normalized, &dest_path, self.has_symlink_privileges)?;
-                    #[cfg(unix)]
-                    create_symlink(&normalized, &dest_path, false)?;
-                }
-            }
+            return process_data_tar(&decompressed, consumer, prefix);
         }
+    }
+    bail!(io::Error::new(io::ErrorKind::InvalidData, "data.tar missing"))
+}
 
-        if !self.lib_symlink_created {
-            let lib_dir = self.output_dir.join("lib");
-            let lib64_dir = self.output_dir.join("lib64");
-            let usr_lib_dir = self.output_dir.join("usr").join("lib");
-            let usr_lib64_dir = self.output_dir.join("usr").join("lib64");
+fn process_data_tar<C: FileConsumer>(data_tar: &[u8], consumer: &mut C, prefix: &str) -> Result<()> {
+    let mut archive = tar::Archive::new(data_tar);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
 
-            if !usr_lib_dir.exists() {
-                let _ = fs::create_dir_all(&usr_lib_dir);
+        let rel_path = path.strip_prefix("/").unwrap_or(&path);
+        let final_path = PathBuf::from(prefix).join(rel_path);
+
+        match entry.header().entry_type() {
+            tar::EntryType::Directory => consumer.add_dir(&final_path)?,
+            tar::EntryType::Regular => {
+                let mut buffer = Vec::new();
+                entry.read_to_end(&mut buffer)?;
+                consumer.add_file(&final_path, &buffer, entry.header().mode()?)?;
             }
-            if !usr_lib64_dir.exists() {
-                let _ = fs::create_dir_all(&usr_lib64_dir);
+            tar::EntryType::Symlink => {
+                if let Some(link) = entry.link_name()? {
+                    consumer.add_symlink(&final_path, &link)?;
+                }
             }
-
-            if !lib_dir.exists() && !lib_dir.is_symlink() {
-                #[cfg(windows)]
-                let _ = create_dir_symlink(Path::new("usr\\lib"), &lib_dir, self.has_symlink_privileges);
-                #[cfg(unix)]
-                let _ = create_dir_symlink(Path::new("usr/lib"), &lib_dir, false);
-            }
-
-            if !lib64_dir.exists() && !lib64_dir.is_symlink() {
-                #[cfg(windows)]
-                let _ = create_dir_symlink(Path::new("usr\\lib64"), &lib64_dir, self.has_symlink_privileges);
-                #[cfg(unix)]
-                let _ = create_dir_symlink(Path::new("usr/lib64"), &lib64_dir, false);
-            }
-
-            self.lib_symlink_created = true;
+            _ => {} // Handle other types if necessary
         }
-
-        Ok(())
     }
-}
-
-impl PackageConsumer for DirConsumer {
-    fn consume(&mut self, _pkg: &PackageInfo, deb_data: &[u8]) -> Result<()> {
-        let data_tar = self.extract_data_tar(deb_data)?;
-        self.extract_to_dir(&data_tar)?;
-        Ok(())
-    }
-}
-
-pub struct FetchConsumer {
-    output_dir: PathBuf,
-}
-
-impl FetchConsumer {
-    pub fn new(output_dir: PathBuf) -> Result<Self> {
-        fs::create_dir_all(&output_dir)?;
-        Ok(Self { output_dir })
-    }
-}
-
-impl PackageConsumer for FetchConsumer {
-    fn consume(&mut self, pkg: &PackageInfo, deb_data: &[u8]) -> Result<()> {
-        let filename = format!("{}_{}_{}.deb", pkg.name, pkg.version, pkg.architecture);
-        let path = self.output_dir.join(&filename);
-        let mut file = File::create(&path)?;
-        file.write_all(deb_data)?;
-        println!("  Saved: {}", path.display());
-        Ok(())
-    }
+    Ok(())
 }
 
 pub struct SysrootBuilder {
@@ -573,7 +459,26 @@ impl SysrootBuilder {
         })
     }
 
-    pub async fn build<C: PackageConsumer>(&self, profile_name: &str, consumer: &mut C) -> Result<()> {
+    fn add_standard_links<C: FileConsumer>(&self, consumer: &mut C, prefix: &str) -> Result<()> {
+        let links = [
+            ("lib", "usr/lib"),
+            ("lib64", "usr/lib64"),
+            ("bin", "usr/bin"),
+            ("sbin", "usr/sbin"),
+        ];
+
+        let prefix_path = Path::new(prefix);
+
+        for (link_name, target_name) in links {
+            let link_path = prefix_path.join(link_name);
+            let target_path = Path::new(target_name);
+            consumer.add_symlink(&link_path, target_path)?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn build<C: FileConsumer>(&self, profile_name: &str, consumer: &mut C) -> Result<()> {
         println!("Resolving packages for profile '{}'...", profile_name);
         let package_names = self.config.resolve_packages(profile_name)?;
         println!("Found {} packages to process", package_names.len());
@@ -597,7 +502,7 @@ impl SysrootBuilder {
                     println!("  Downloading {} {}...", pkg_info.name, pkg_info.version);
                     let data = self.fetcher.download_package(&pkg_info).await?;
                     self.cache.save(&pkg_info.name, &pkg_info.version, &data)?;
-                    Ok::<(), SysrootError>(())
+                    Ok::<(), anyhow::Error>(())
                 })
                 .buffer_unordered(concurrency);
 
@@ -607,10 +512,8 @@ impl SysrootBuilder {
             }
         }
 
-        for pkg_info in all_pkg_infos {
+        for pkg_info in &all_pkg_infos {
             println!("Processing {}...", pkg_info.name);
-
-            consumer.on_start(&pkg_info)?;
 
             let deb_data = if self.cache.has_cached(&pkg_info.name, &pkg_info.version) {
                 self.cache.load(&pkg_info.name, &pkg_info.version)?
@@ -622,9 +525,32 @@ impl SysrootBuilder {
                 data
             };
 
-            consumer.consume(&pkg_info, &deb_data)?;
-            consumer.on_complete(&pkg_info)?;
+            process_deb_into_consumer(&deb_data, consumer, "sysroot")?;
         }
+
+        println!("Creating standard sysroot symlinks...");
+        self.add_standard_links(consumer, "sysroot")?;
+
+        let package_list: Vec<String> = all_pkg_infos
+            .iter()
+            .map(|info| format!("{}={}", info.name, info.version))
+            .collect();
+
+        println!("Writing packages.txt into output...");
+        let package_list_content = package_list.join("\n");
+        consumer.add_file(
+            Path::new("packages.txt"),
+            package_list_content.as_bytes(),
+            0o644
+        )?;
+
+        println!("Writing toolchain.cmake into output...");
+        let toolchain_content = get_toolchain_content();
+        consumer.add_file(
+            Path::new("toolchain.cmake"),
+            toolchain_content.as_bytes(),
+            0o644
+        )?;
 
         Ok(())
     }
@@ -643,7 +569,7 @@ impl SysrootBuilder {
 
     pub fn write_package_list(&self, output_dir: &Path, profile_name: &str) -> Result<()> {
         let package_names = self.config.resolve_packages(profile_name)?;
-        
+
         let mut package_list = Vec::new();
         for pkg_name in &package_names {
             if let Ok(pkg_info) = self.fetcher.fetch_package(pkg_name) {
@@ -687,9 +613,6 @@ pub enum Commands {
 
         #[arg(long, default_value = ".package-cache")]
         cache_dir: PathBuf,
-
-        #[arg(long, default_value = "true")]
-        toolchain: bool,
     },
 
     Extract {
@@ -714,29 +637,6 @@ pub enum Commands {
         #[arg(long, default_value = "true")]
         toolchain: bool,
     },
-
-    Fetch {
-        #[arg(short, long)]
-        config: PathBuf,
-
-        #[arg(short, long)]
-        profile: String,
-
-        #[arg(short, long)]
-        output: PathBuf,
-
-        #[arg(short, long, default_value = "amd64")]
-        arch: String,
-
-        #[arg(long, default_value = "false")]
-        no_cache: bool,
-
-        #[arg(long, default_value = ".package-cache")]
-        cache_dir: PathBuf,
-
-        #[arg(long, default_value = "false")]
-        toolchain: bool,
-    },
 }
 
 #[tokio::main]
@@ -758,8 +658,7 @@ async fn main() -> Result<()> {
             output,
             arch,
             no_cache,
-            cache_dir,
-            toolchain,
+            cache_dir
         } => {
             let config = Config::load(&config)?;
             let mut builder = SysrootBuilder::new(config, arch, Some(cache_dir), !no_cache)?;
@@ -769,24 +668,14 @@ async fn main() -> Result<()> {
             let output_str = output.to_string_lossy();
             if output_str.ends_with(".tar.gz") || output_str.ends_with(".tgz") {
                 let file = File::create(&output)?;
-                let mut consumer = TarConsumer::new(file, "sysroot")?;
-
+                let mut consumer = TarConsumer::new(file)?;
                 builder.build(&profile, &mut consumer).await?;
                 consumer.finish()?;
-
-                println!("Sysroot built: {}", output.display());
             } else {
-                let mut consumer = DirConsumer::new(output.clone())?;
-
+                let mut consumer = DiskConsumer::new(output.clone())?;
                 builder.build(&profile, &mut consumer).await?;
-
-                if toolchain {
-                    builder.write_toolchain_file(&output)?;
-                }
-                builder.write_package_list(&output, &profile)?;
-
-                println!("Sysroot extracted to: {}", output.display());
             }
+            println!("Sysroot build complete: {}", output.display());
         }
 
         Commands::Extract {
@@ -803,7 +692,7 @@ async fn main() -> Result<()> {
 
             builder.initialize().await?;
 
-            let mut consumer = DirConsumer::new(output.clone())?;
+            let mut consumer = DiskConsumer::new(output.clone())?;
 
             builder.build(&profile, &mut consumer).await?;
 
@@ -813,32 +702,6 @@ async fn main() -> Result<()> {
             builder.write_package_list(&output, &profile)?;
 
             println!("Sysroot extracted to: {}", output.display());
-        }
-
-        Commands::Fetch {
-            config,
-            profile,
-            output,
-            arch,
-            no_cache,
-            cache_dir,
-            toolchain,
-        } => {
-            let config = Config::load(&config)?;
-            let mut builder = SysrootBuilder::new(config, arch, Some(cache_dir), !no_cache)?;
-
-            builder.initialize().await?;
-
-            let mut consumer = FetchConsumer::new(output.clone())?;
-
-            builder.build(&profile, &mut consumer).await?;
-
-            if toolchain {
-                builder.write_toolchain_file(&output)?;
-            }
-            builder.write_package_list(&output, &profile)?;
-
-            println!("Packages fetched to: {}", output.display());
         }
     }
 

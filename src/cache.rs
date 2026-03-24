@@ -1,4 +1,4 @@
-use crate::{Result, SysrootError};
+use crate::Result;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
@@ -20,7 +20,6 @@ impl FileCache {
     }
 
     pub fn get_path(&self, pkg_name: &str, pkg_version: &str) -> PathBuf {
-        // Use name_version as cache key to handle multiple versions
         let safe_version = pkg_version.replace(':', "_").replace('/', "_");
         self.cache_dir.join(format!("{}_{}.deb", pkg_name, safe_version))
     }
@@ -42,6 +41,6 @@ impl FileCache {
 
     pub fn load(&self, pkg_name: &str, pkg_version: &str) -> Result<Vec<u8>> {
         let path = self.get_path(pkg_name, pkg_version);
-        fs::read(&path).map_err(SysrootError::from)
+        Ok(fs::read(&path)?)
     }
 }

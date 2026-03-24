@@ -1,9 +1,10 @@
-use crate::{PackageInfo, Result, SysrootError};
+use crate::{PackageInfo, Result};
 use flate2::read::GzDecoder;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::io::Read;
 use xz2::read::XzDecoder;
+use anyhow::bail;
 
 pub struct DebianFetcher {
     client: Client,
@@ -40,9 +41,7 @@ impl DebianFetcher {
             }
         }
 
-        Err(SysrootError::InvalidConfig(
-            "Failed to fetch package index from any mirror".to_string(),
-        ))
+        bail!("Failed to fetch package index from any mirror")
     }
 
     async fn fetch_index_from_mirror(
@@ -193,10 +192,8 @@ impl DebianFetcher {
             Some(index) => index
                 .get(package)
                 .cloned()
-                .ok_or_else(|| SysrootError::PackageNotFound(package.to_string())),
-            None => Err(SysrootError::InvalidConfig(
-                "Package index not initialized. Call initialize() first.".to_string(),
-            )),
+                .ok_or_else(|| anyhow::anyhow!("Package not found: {}", package)),
+            None => bail!("Package index not initialized. Call initialize() first."),
         }
     }
 
@@ -204,11 +201,7 @@ impl DebianFetcher {
         let response = self.client.get(&pkg.download_url).send().await?;
 
         if !response.status().is_success() {
-            return Err(SysrootError::PackageNotFound(format!(
-                "Failed to download {}: HTTP {}",
-                pkg.name,
-                response.status()
-            )));
+            bail!("Failed to download {}: HTTP {}", pkg.name, response.status());
         }
 
         let bytes = response.bytes().await?;

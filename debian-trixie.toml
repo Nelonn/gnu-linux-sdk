@@ -51,6 +51,8 @@ packages = [
     "libxcursor-dev",
     "libxfixes3",
     "libxfixes-dev",
+    "libxrender1",
+    "libxrender-dev",
     "libxi6",
     "libxi-dev",
     "libxss1",
@@ -59,6 +61,7 @@ packages = [
     "libxtst-dev",
     "libxkbcommon0",
     "libxkbcommon-dev",
+    "libxcb1-dev",
 ]
 requires = ["glibc"]
 
@@ -76,6 +79,7 @@ requires = ["glibc"]
 [groups.graphics]
 packages = [
     "libdrm-dev",
+    "libgbm1",
     "libgbm-dev",
     "libglx-dev",
     "libglvnd-dev",
