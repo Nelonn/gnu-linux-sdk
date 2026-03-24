@@ -19,28 +19,28 @@ impl FileCache {
         Ok(Self { cache_dir, enabled })
     }
 
-    pub fn get_path(&self, pkg_name: &str, pkg_version: &str) -> PathBuf {
+    pub fn get_path(&self, pkg_name: &str, pkg_version: &str, pkg_architecture: &str) -> PathBuf {
         let safe_version = pkg_version.replace(':', "_").replace('/', "_");
-        self.cache_dir.join(format!("{}_{}.deb", pkg_name, safe_version))
+        self.cache_dir.join(format!("{}_{}_{}.deb", pkg_name, safe_version, pkg_architecture))
     }
 
-    pub fn has_cached(&self, pkg_name: &str, pkg_version: &str) -> bool {
-        self.enabled && self.get_path(pkg_name, pkg_version).exists()
+    pub fn has_cached(&self, pkg_name: &str, pkg_version: &str, pkg_architecture: &str) -> bool {
+        self.enabled && self.get_path(pkg_name, pkg_version, pkg_architecture).exists()
     }
 
-    pub fn save(&self, pkg_name: &str, pkg_version: &str, data: &[u8]) -> Result<()> {
+    pub fn save(&self, pkg_name: &str, pkg_version: &str, pkg_architecture: &str, data: &[u8]) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
         fs::create_dir_all(&self.cache_dir)?;
-        let path = self.get_path(pkg_name, pkg_version);
+        let path = self.get_path(pkg_name, pkg_version, pkg_architecture);
         let mut file = File::create(&path)?;
         file.write_all(data)?;
         Ok(())
     }
 
-    pub fn load(&self, pkg_name: &str, pkg_version: &str) -> Result<Vec<u8>> {
-        let path = self.get_path(pkg_name, pkg_version);
+    pub fn load(&self, pkg_name: &str, pkg_version: &str, pkg_architecture: &str) -> Result<Vec<u8>> {
+        let path = self.get_path(pkg_name, pkg_version, pkg_architecture);
         Ok(fs::read(&path)?)
     }
 }

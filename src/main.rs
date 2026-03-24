@@ -490,7 +490,7 @@ impl SysrootBuilder {
 
         let to_download: Vec<PackageInfo> = all_pkg_infos
             .iter()
-            .filter(|info| !self.cache.has_cached(&info.name, &info.version))
+            .filter(|info| !self.cache.has_cached(&info.name, &info.version, &info.architecture))
             .cloned()
             .collect();
 
@@ -501,7 +501,7 @@ impl SysrootBuilder {
                 .map(|pkg_info| async move {
                     println!("  Downloading {} {}...", pkg_info.name, pkg_info.version);
                     let data = self.fetcher.download_package(&pkg_info).await?;
-                    self.cache.save(&pkg_info.name, &pkg_info.version, &data)?;
+                    self.cache.save(&pkg_info.name, &pkg_info.version, &pkg_info.architecture, &data)?;
                     Ok::<(), anyhow::Error>(())
                 })
                 .buffer_unordered(concurrency);
@@ -515,13 +515,13 @@ impl SysrootBuilder {
         for pkg_info in &all_pkg_infos {
             println!("Processing {}...", pkg_info.name);
 
-            let deb_data = if self.cache.has_cached(&pkg_info.name, &pkg_info.version) {
-                self.cache.load(&pkg_info.name, &pkg_info.version)?
+            let deb_data = if self.cache.has_cached(&pkg_info.name, &pkg_info.version, &pkg_info.architecture) {
+                self.cache.load(&pkg_info.name, &pkg_info.version, &pkg_info.architecture)?
             } else {
                 // This shouldn't happen now, but just in case
                 println!("  Downloading {} {}...", pkg_info.name, pkg_info.version);
                 let data = self.fetcher.download_package(&pkg_info).await?;
-                self.cache.save(&pkg_info.name, &pkg_info.version, &data)?;
+                self.cache.save(&pkg_info.name, &pkg_info.version, &pkg_info.architecture, &data)?;
                 data
             };
 
