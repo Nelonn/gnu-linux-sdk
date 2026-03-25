@@ -130,6 +130,12 @@ pub struct Strategy {
     pub method: String,
     pub suite: String,
     pub mirrors: Vec<String>,
+    #[serde(default = "default_components")]
+    pub components: Vec<String>,
+}
+
+fn default_components() -> Vec<String> {
+    vec!["main".to_string()]
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -501,6 +507,7 @@ impl SysrootBuilder {
             config.strategy.suite.clone(),
             architecture,
             config.strategy.mirrors.clone(),
+            config.strategy.components.clone(),
         );
 
         Ok(Self {

@@ -11,17 +11,19 @@ pub struct DebianFetcher {
     suite: String,
     architecture: String,
     mirrors: Vec<String>,
+    components: Vec<String>,
     /// Cached package index: package name -> package info
     package_index: Option<HashMap<String, PackageInfo>>,
 }
 
 impl DebianFetcher {
-    pub fn new(suite: String, architecture: String, mirrors: Vec<String>) -> Self {
+    pub fn new(suite: String, architecture: String, mirrors: Vec<String>, components: Vec<String>) -> Self {
         Self {
             client: Client::new(),
             suite,
             architecture,
             mirrors,
+            components,
             package_index: None,
         }
     }
@@ -51,11 +53,10 @@ impl DebianFetcher {
         let suite = &self.suite;
         let arch = &self.architecture;
 
-        let components = ["main", "contrib", "non-free", "non-free-firmware"];
-        let compressions = ["", ".gz", ".xz"];
         let mut paths = Vec::new();
 
-        for component in &components {
+        for component in &self.components {
+            let compressions = ["", ".gz", ".xz"];
             for comp in compressions {
                 paths.push(format!(
                     "dists/{}/{}/binary-{}/Packages{}",
