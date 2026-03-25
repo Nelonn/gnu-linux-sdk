@@ -541,6 +541,24 @@ impl SysrootBuilder {
         let package_names = self.config.resolve_packages(profile_name)?;
         println!("Found {} packages to process", package_names.len());
 
+        // First pass: collect all not-found packages
+        let mut not_found_packages = Vec::new();
+        for pkg_name in &package_names {
+            if let Err(e) = self.fetcher.fetch_package(pkg_name) {
+                if e.to_string().contains("Package not found") {
+                    not_found_packages.push(pkg_name.clone());
+                }
+            }
+        }
+
+        if !not_found_packages.is_empty() {
+            eprintln!("\nError: {} package(s) not found:", not_found_packages.len());
+            for pkg in &not_found_packages {
+                eprintln!("  - {}", pkg);
+            }
+            anyhow::bail!("{} package(s) not found", not_found_packages.len());
+        }
+
         let mut all_pkg_infos = Vec::new();
         for pkg_name in &package_names {
             all_pkg_infos.push(self.fetcher.fetch_package(pkg_name)?);
