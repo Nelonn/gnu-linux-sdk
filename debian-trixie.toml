@@ -61,6 +61,7 @@ packages = [
     "libxtst-dev",
     "libxkbcommon0",
     "libxkbcommon-dev",
+    "libxkbcommon-x11-dev",
     "libxcb1-dev",
 ]
 requires = ["glibc"]
@@ -72,6 +73,7 @@ packages = [
     "libwayland-cursor0",
     "libwayland-egl1",
     "libwayland-dev",
+    "libxkbcommon-dev",
     "wayland-protocols",
 ]
 requires = ["glibc"]
@@ -161,6 +163,7 @@ packages = [
     "libdbus-1-dev",
     "libsystemd0",
     "libsystemd-dev",
+    "libva-dev",
 ]
 requires = ["glibc"]
 
